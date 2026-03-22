@@ -1,41 +1,5 @@
 #!/bin/bash
 # functions to include for clipping:
-
-function clipfast {
-    file=$1
-    start=$2
-    end=$3
-    name=$4
-    ffmpeg -y \
-           -ss "$start" -to "$end" \
-           -i "$file" \
-           -c copy \
-           "$name"
-}
-function clipslow {
-    file=$1
-    start=$2
-    end=$3
-    name=$4
-    # ffmpeg -y \
-        #        -hwaccel cuda \
-        #        -i "$file" \
-        #        -ss "$start" -to "$end" \
-        #        -c:v h264_nvenc \
-        #        "$name"
-    ffmpeg -y \
-           -hwaccel cuda \
-           -i "$file" \
-           -ss "$start" -to "$end" \
-           -c:v h264_nvenc \
-           -preset p3 \
-           -cq 19 \
-           -rc vbr \
-           -b:v 5M \
-           -maxrate 10M \
-           -bufsize 20M \
-           "$name"
-}
 function timestamp_to_seconds() {
     local ts="$1"
     IFS=: read -r h m s <<< "$ts"
@@ -47,6 +11,7 @@ function timestamp_to_seconds() {
     fi
     echo "$(awk -v h="$h" -v m="$m" -v s="$s" 'BEGIN { print h*3600 + m*60 + s }')"
 }
+
 get_nearest_keyframe() {
     local input="$1"
     local target_time=$(timestamp_to_seconds "$2")
@@ -79,6 +44,7 @@ get_nearest_keyframe() {
         }
     '
 }
+
 function clip() {
     local file="$1"
     local start="$2"
