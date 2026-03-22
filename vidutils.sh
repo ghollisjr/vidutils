@@ -132,10 +132,14 @@ function clip() {
 }
 
 function crop {
-    ffmpeg -y -i "$1" -c:a copy -vf "crop=494:530:0:0" "$2"
+    # Usage: crop input output left right top bottom
+    local input="$1"
+    local output="$2"
+    local left="${3:-0}"
+    local right="${4:-0}"
+    local top="${5:-0}"
+    local bottom="${6:-0}"
+    local vf="crop=iw-${left}-${right}:ih-${top}-${bottom}:${left}:${top}"
+    echo "crop filter: $vf"
+    ffmpeg -y -i "$input" -c:a copy -vf "$vf" "$output"
 }
-function crop2 {
-    echo "crop=$3:$4:0:0"
-    ffmpeg -y -i "$1" -c:a copy -vf "crop=$3:$4:0:0" "$2"
-}
-
