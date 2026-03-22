@@ -1,0 +1,1 @@
+Simple bash functions I use often for batch video editing.
