@@ -45,6 +45,38 @@ get_nearest_keyframe() {
     '
 }
 
+get_video_bitrate() {
+    local input="$1"
+    ffprobe -v error -select_streams v:0 -show_entries stream=bit_rate -of csv=p=0 "$input"
+}
+
+function clipcopy() {
+    local file="$1"
+    local start="$2"
+    local start_sec=$(timestamp_to_seconds "$2")
+    local end="$3"
+    local end_sec=$(timestamp_to_seconds "$3")
+    local name="$4"
+
+    local keyframe_seek
+    keyframe_seek=$(get_nearest_keyframe "$file" "$start")
+
+    echo keyframe_seek = $keyframe_seek
+
+    local offset
+    offset=$(awk -v s="$start_sec" -v k="$keyframe_seek" 'BEGIN { d = s - k; print (d < 0) ? 0 : d }')
+
+    local duration
+    duration=$(awk -v s="$start_sec" -v e="$end_sec" 'BEGIN { print (e - s) }')
+
+    ffmpeg -y \
+           -ss "$keyframe_seek" -i "$file" \
+           -ss "$offset" -t "$duration" \
+           -c:v copy -c:a copy \
+           -movflags +faststart \
+           "$name"
+}
+
 function clip() {
     local file="$1"
     local start="$2"
@@ -85,14 +117,22 @@ function clip() {
         #        -movflags +faststart \
         #        "$name"
 
-    # (POSSIBLY) BEST BY ALL METRICS: cpu decode, gpu encode
-    #
-    # This fixes the sync issue, has low CPU use, full GPU encoding,
-    # and is actually faster than the pure GPU version.
+    # Read source bitrate to preserve quality
+    local bitrate
+    bitrate=$(get_video_bitrate "$file")
+
+    # Build encoding options
+    local bitrate_opts=()
+    if [[ -n "$bitrate" && "$bitrate" != "N/A" ]]; then
+        bitrate_opts=(-b:v "$bitrate")
+        echo "source bitrate = $bitrate"
+    fi
+
+    # cpu decode, gpu encode — preserving source bitrate
     ffmpeg -y \
            -ss "$keyframe_seek" -i "$file" \
            -ss "$offset" -t "$duration" \
-           -c:v h264_nvenc \
+           -c:v h264_nvenc -preset p4 "${bitrate_opts[@]}" \
            -movflags +faststart \
            "$name"
 }
