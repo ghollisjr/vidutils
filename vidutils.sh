@@ -50,40 +50,17 @@ get_video_bitrate() {
     ffprobe -v error -select_streams v:0 -show_entries stream=bit_rate -of csv=p=0 "$input"
 }
 
-function clipcopy() {
-    local file="$1"
-    local start="$2"
-    local start_sec=$(timestamp_to_seconds "$2")
-    local end="$3"
-    local end_sec=$(timestamp_to_seconds "$3")
-    local name="$4"
+# Cut a single segment.  mode is "copy" (stream copy) or "encode"
+# (nvenc, preserving source bitrate).
+function _clip_segment() {
+    local mode="$1"
+    local file="$2"
+    local start="$3"
+    local end="$4"
+    local name="$5"
 
-    local keyframe_seek
-    keyframe_seek=$(get_nearest_keyframe "$file" "$start")
-
-    echo keyframe_seek = $keyframe_seek
-
-    local offset
-    offset=$(awk -v s="$start_sec" -v k="$keyframe_seek" 'BEGIN { d = s - k; print (d < 0) ? 0 : d }')
-
-    local duration
-    duration=$(awk -v s="$start_sec" -v e="$end_sec" 'BEGIN { print (e - s) }')
-
-    ffmpeg -y \
-           -ss "$keyframe_seek" -i "$file" \
-           -ss "$offset" -t "$duration" \
-           -c:v copy -c:a copy \
-           -movflags +faststart \
-           "$name"
-}
-
-function clip() {
-    local file="$1"
-    local start="$2"
-    local start_sec=$(timestamp_to_seconds "$2")
-    local end="$3"
-    local end_sec=$(timestamp_to_seconds "$3")
-    local name="$4"
+    local start_sec=$(timestamp_to_seconds "$start")
+    local end_sec=$(timestamp_to_seconds "$end")
 
     local keyframe_seek
     keyframe_seek=$(get_nearest_keyframe "$file" "$start")
@@ -97,25 +74,16 @@ function clip() {
     # Calculate duration
     local duration
     duration=$(awk -v s="$start_sec" -v e="$end_sec" 'BEGIN { print (e - s) }')
-    # pure CPU: very slow
-    # 
-    # ffmpeg -y \
-        #        -ss "$keyframe_seek" -i "$file" \
-        #        -ss "$offset" -t "$duration" \
-        #        -c:v libx264 \
-        #        -movflags +faststart \
-        #        "$name"
-    
-    # pure GPU: fast but not quite as fast as CPU+GPU, low CPU use,
-    # some artifacts compared to CPU
-    # 
-    # ffmpeg -y -hwaccel cuda \
-        #        -ss "$keyframe_seek" -i "$file" \
-        #        -ss "$offset" \
-        #        -t "$duration" \
-        #        -c:v h264_nvenc \
-        #        -movflags +faststart \
-        #        "$name"
+
+    if [[ "$mode" == "copy" ]]; then
+        ffmpeg -y \
+               -ss "$keyframe_seek" -i "$file" \
+               -ss "$offset" -t "$duration" \
+               -c:v copy -c:a copy \
+               -movflags +faststart \
+               "$name"
+        return
+    fi
 
     # Read source bitrate to preserve quality
     local bitrate
@@ -136,6 +104,74 @@ function clip() {
            -movflags +faststart \
            "$name"
 }
+
+# Cut one or more segments and, if there is more than one, concatenate
+# them into a single output.  Usage:
+#   _clip_multi MODE file start end [start end ...] output
+function _clip_multi() {
+    local mode="$1"
+    shift
+    local file="$1"
+    shift
+
+    # last argument is the output name, the rest are start/end pairs
+    local args=("$@")
+    local nargs=${#args[@]}
+    if (( nargs < 3 || (nargs - 1) % 2 != 0 )); then
+        echo "usage: ${FUNCNAME[1]} file start end [start end ...] output" >&2
+        return 1
+    fi
+    local name="${args[nargs-1]}"
+    local pairs=("${args[@]:0:nargs-1}")
+    local nsegs=$(( (nargs - 1) / 2 ))
+
+    # single segment: cut straight to the output, no temp files
+    if (( nsegs == 1 )); then
+        _clip_segment "$mode" "$file" "${pairs[0]}" "${pairs[1]}" "$name"
+        return
+    fi
+
+    local ext="${name##*.}"
+    [[ "$ext" == "$name" ]] && ext="mp4"
+
+    local tmpdir
+    tmpdir=$(mktemp -d) || return 1
+
+    local listfile="$tmpdir/segments.txt"
+    : > "$listfile"
+
+    local i part
+    for (( i = 0; i < nsegs; i++ )); do
+        part=$(printf '%s/seg%03d.%s' "$tmpdir" "$i" "$ext")
+        echo "segment $((i+1))/$nsegs: ${pairs[2*i]} -> ${pairs[2*i+1]}"
+        if ! _clip_segment "$mode" "$file" "${pairs[2*i]}" "${pairs[2*i+1]}" "$part"; then
+            rm -rf "$tmpdir"
+            return 1
+        fi
+        printf "file '%s'\n" "$part" >> "$listfile"
+    done
+
+    # all segments share the source's codec/resolution/timebase, so a
+    # stream copy concat is enough — no second re-encode
+    ffmpeg -y -f concat -safe 0 -i "$listfile" \
+           -c copy -movflags +faststart \
+           "$name"
+    local status=$?
+
+    rm -rf "$tmpdir"
+    return $status
+}
+
+# clipcopy file start end [start end ...] output
+function clipcopy() {
+    _clip_multi copy "$@"
+}
+
+# clip file start end [start end ...] output
+function clip() {
+    _clip_multi encode "$@"
+}
+
 
 function crop {
     # Usage: crop input output left right top bottom
